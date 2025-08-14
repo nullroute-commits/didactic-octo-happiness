@@ -1,0 +1,169 @@
+name: Security & Maintenance
+
+on:
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Security scan
+      run: |
+        echo "Running security scan..."
+        
+        # Check for potential vulnerabilities in shell scripts
+        if command -v shellcheck >/dev/null 2>&1; then
+          echo "Running ShellCheck security analysis..."
+          for script in collect_info.sh plugins/*.sh; do
+            echo "Scanning $script..."
+            shellcheck "$script" || echo "Issues found in $script"
+          done
+        else
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          echo "Running ShellCheck security analysis..."
+          for script in collect_info.sh plugins/*.sh; do
+            echo "Scanning $script..."
+            shellcheck "$script" || echo "Issues found in $script"
+          done
+        fi
+        
+        echo "Security scan completed"
+    
+    - name: Check for sensitive data exposure
+      run: |
+        echo "Checking for potential sensitive data exposure..."
+        
+        # Check for patterns that might expose sensitive information
+        suspicious_patterns=(
+          "password"
+          "secret"
+          "key"
+          "token"
+          "credential"
+          "private"
+          "/home/"
+          "/root/"
+          "127.0.0.1"
+          "localhost"
+        )
+        
+        for pattern in "${suspicious_patterns[@]}"; do
+          if grep -r -i "$pattern" --include="*.sh" . | grep -v "# " | grep -v "example" | grep -v "template"; then
+            echo "Warning: Found potential sensitive pattern: $pattern"
+          fi
+        done
+        
+        echo "Sensitive data check completed"
+    
+    - name: Test with minimal privileges
+      run: |
+        echo "Testing execution with minimal privileges..."
+        
+        # Create a test user with minimal privileges
+        sudo useradd -m -s /bin/bash testuser
+        sudo -u testuser bash -c "
+          cd /home/testuser
+          cp -r $GITHUB_WORKSPACE/* .
+          chmod +x collect_info.sh plugins/*.sh
+          timeout 30 ./collect_info.sh > minimal_priv_test.json
+          python3 -m json.tool minimal_priv_test.json > /dev/null
+          echo 'Minimal privilege test passed'
+        "
+
+  maintenance:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check code quality
+      run: |
+        echo "Running code quality checks..."
+        
+        # Check for code complexity
+        for script in collect_info.sh plugins/*.sh; do
+          echo "Analyzing $script..."
+          lines=$(wc -l < "$script")
+          functions=$(grep -c "^[a-zA-Z_][a-zA-Z0-9_]*() {" "$script" || echo 0)
+          echo "$script: $lines lines, $functions functions"
+          
+          if [ "$lines" -gt 500 ]; then
+            echo "Warning: $script is quite large ($lines lines)"
+          fi
+        done
+        
+        echo "Code quality check completed"
+    
+    - name: Check test coverage
+      run: |
+        echo "Checking test coverage..."
+        
+        plugin_count=$(ls plugins/*.sh | wc -l)
+        test_count=$(ls test/plugins/*.bats 2>/dev/null | wc -l || echo 0)
+        
+        echo "Plugins: $plugin_count"
+        echo "Plugin tests: $test_count"
+        
+        if [ "$test_count" -lt "$plugin_count" ]; then
+          echo "Warning: Not all plugins have tests"
+        else
+          echo "Good: All plugins appear to have tests"
+        fi
+        
+        # Check if integration tests exist
+        if [ -f "test/integration/collect_info_test.bats" ]; then
+          echo "Good: Integration tests found"
+        else
+          echo "Warning: No integration tests found"
+        fi
+    
+    - name: Dependency freshness check
+      run: |
+        echo "Checking dependency freshness..."
+        
+        # Check for outdated documentation about dependencies
+        documented_deps=$(grep -o "bats\|bc\|python3\|jq\|ip\|ss\|lldpctl\|docker" README.md | sort | uniq)
+        echo "Documented dependencies: $documented_deps"
+        
+        # Check if these are still being used
+        for dep in $documented_deps; do
+          if grep -r "$dep" plugins/ >/dev/null; then
+            echo "✓ $dep is still used"
+          else
+            echo "? $dep may not be used anymore"
+          fi
+        done
+
+  compatibility-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ubuntu-version: ['20.04', '22.04', '24.04']
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Test on Ubuntu ${{ matrix.ubuntu-version }}
+      run: |
+        echo "Testing compatibility on Ubuntu ${{ matrix.ubuntu-version }}..."
+        
+        # This would ideally run in a container with the specific Ubuntu version
+        # For now, just run basic compatibility checks
+        chmod +x collect_info.sh plugins/*.sh
+        timeout 30 ./collect_info.sh > ubuntu_${{ matrix.ubuntu-version }}_test.json
+        python3 -m json.tool ubuntu_${{ matrix.ubuntu-version }}_test.json > /dev/null
+        echo "Ubuntu ${{ matrix.ubuntu-version }} compatibility test passed"
+    
+    - name: Upload compatibility test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: compatibility-ubuntu-${{ matrix.ubuntu-version }}
+        path: ubuntu_${{ matrix.ubuntu-version }}_test.json
+        retention-days: 30

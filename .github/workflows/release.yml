@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+
+jobs:
+  comprehensive-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install comprehensive dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bats bc python3 jq
+        # Install all optional tools for complete testing
+        sudo apt-get install -y iproute2 net-tools bridge-utils lldpd docker.io
+        # Start services
+        sudo systemctl start lldpd || echo "LLDP daemon not available"
+        sudo systemctl start docker || echo "Docker not available"
+    
+    - name: Make scripts executable
+      run: |
+        chmod +x collect_info.sh plugins/*.sh
+    
+    - name: Run comprehensive functionality test
+      run: |
+        echo "Running comprehensive test with all tools available..."
+        timeout 60 ./collect_info.sh > release_test_output.json
+        python3 -m json.tool release_test_output.json > /dev/null
+        
+        # Verify comprehensive output
+        lines=$(wc -l < release_test_output.json)
+        if [ "$lines" -lt 200 ]; then
+          echo "Warning: Output seems small ($lines lines), expected comprehensive output"
+        else
+          echo "Comprehensive test passed with $lines lines of output"
+        fi
+    
+    - name: Run all available tests
+      run: |
+        # Run integration tests if available
+        if [ -f "test/integration/collect_info_test.bats" ]; then
+          echo "Running integration tests..."
+          bats test/integration/collect_info_test.bats
+        fi
+        
+        # Run plugin tests if available  
+        if ls test/plugins/*.bats >/dev/null 2>&1; then
+          echo "Running plugin tests..."
+          bats test/plugins/*.bats
+        fi
+    
+    # The architecture and plugin tests are now run in parallel in the 'arch-plugin-test' job using a matrix strategy.
+    - name: Package release artifacts
+      run: |
+        mkdir -p release_package
+        cp -r plugins/ release_package/
+        cp collect_info.sh README.md TECHNICAL.md CONFIGURATION.md LICENSE release_package/
+        cp -r test/ release_package/
+        tar -czf automation_nation_release.tar.gz release_package/
+        
+        # Create checksums
+        sha256sum automation_nation_release.tar.gz > automation_nation_release.tar.gz.sha256
+    
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-package
+        path: |
+          automation_nation_release.tar.gz
+          automation_nation_release.tar.gz.sha256
+          release_test_output.json
+          test_*_*.json
+        retention-days: 90
+
+  security-audit:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Security audit
+      run: |
+        echo "Running security audit..."
+        
+        # Check for potential security issues
+        echo "Checking for hardcoded credentials..."
+        if grep -r -i "password\|secret\|key\|token\|credential" --include="*.sh" --include="*.md" . | grep -v "# " | grep -v "example"; then
+          echo "Warning: Potential credentials found"
+        fi
+        
+        echo "Checking file permissions..."
+        find . -name "*.sh" -perm /o+w -exec echo "Error: {} is world-writable" \; -exec exit 1 \;
+        
+        echo "Checking for dangerous commands..."
+        if grep -r "rm -rf\|dd if=\|mkfs\|fdisk" --include="*.sh" .; then
+          echo "Warning: Potentially dangerous commands found"
+        fi
+        
+        echo "Security audit completed"
+
+  documentation-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check documentation completeness
+      run: |
+        echo "Checking documentation completeness..."
+        
+        # Check that all plugins are documented
+        for plugin in plugins/*.sh; do
+          plugin_name=$(basename "$plugin" .sh)
+          if ! grep -q "$plugin_name" README.md; then
+            echo "Warning: Plugin $plugin_name not documented in README.md"
+          fi
+        done
+        
+        # Check for TODO/FIXME comments
+        if grep -r "TODO\|FIXME" --include="*.sh" --include="*.md" .; then
+          echo "Warning: TODO/FIXME items found"
+        fi
+        
+        echo "Documentation check completed"

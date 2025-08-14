@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-type: [integration, plugins]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bats bc python3 jq
+        # Install optional networking tools for comprehensive testing
+        sudo apt-get install -y iproute2 net-tools bridge-utils
+    
+    - name: Make scripts executable
+      run: |
+        chmod +x collect_info.sh plugins/*.sh
+    
+    - name: Run basic functionality test
+      run: |
+        timeout 30 ./collect_info.sh > test_output.json
+        python3 -m json.tool test_output.json > /dev/null
+        echo "Basic functionality test passed"
+    
+    - name: Run Bats tests - Integration
+      if: matrix.test-type == 'integration'
+      run: |
+        if [ -f "test/integration/collect_info_test.bats" ]; then
+          bats test/integration/collect_info_test.bats
+        else
+          echo "No integration tests found, skipping"
+        fi
+    
+    - name: Run Bats tests - Plugins
+      if: matrix.test-type == 'plugins'
+      run: |
+        if ls test/plugins/*.bats >/dev/null 2>&1; then
+          bats test/plugins/*.bats
+        else
+          echo "No plugin tests found, skipping"
+        fi
+    
+    - name: Test environment variable configuration
+      run: |
+        echo "Testing configurable limits..."
+        # Test with reduced limits
+        export MAX_INTERFACES=2
+        export MAX_ROUTES=5
+        timeout 30 ./collect_info.sh > test_env_vars.json
+        python3 -m json.tool test_env_vars.json > /dev/null
+        echo "Environment variable configuration test passed"
+    
+    - name: Test architecture validation
+      run: |
+        echo "Testing architecture validation..."
+        # Test with invalid architecture (should fail)
+        if ./plugins/10_os_info.sh "invalid_arch" 2>&1 | grep -q "invalid characters"; then
+          echo "Architecture validation test passed"
+        else
+          echo "Architecture validation test failed"
+          exit 1
+        fi
+    
+    - name: Test dependency warnings
+      run: |
+        echo "Testing dependency warnings..."
+        # Run and check for dependency warnings
+        timeout 30 ./collect_info.sh 2>&1 | grep -q "Warning:" || echo "No dependency warnings (all tools available)"
+        echo "Dependency warning test completed"
+    
+    - name: Upload test artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.test-type }}
+        path: |
+          test_output.json
+          test_env_vars.json
+        retention-days: 30
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install ShellCheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+    
+    - name: Run ShellCheck on main script
+      run: |
+        shellcheck collect_info.sh || echo "ShellCheck found issues in main script (non-blocking)"
+    
+    - name: Run ShellCheck on plugins
+      run: |
+        for plugin in plugins/*.sh; do
+          echo "Checking $plugin..."
+          shellcheck "$plugin" || echo "ShellCheck found issues in $plugin (non-blocking)"
+        done
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Check for hardcoded secrets
+      run: |
+        echo "Checking for potential secrets in code..."
+        # Simple check for common secret patterns
+        if grep -r -i "password\|secret\|key\|token" --include="*.sh" . | grep -v "# "; then
+          echo "Warning: Potential secrets found in code"
+        else
+          echo "No obvious secrets found"
+        fi
+    
+    - name: Check file permissions
+      run: |
+        echo "Checking file permissions..."
+        find . -name "*.sh" -not -perm -u+x -exec echo "Warning: {} is not executable" \;
+        find . -name "*.sh" -perm /o+w -exec echo "Warning: {} is world-writable" \;
+        echo "Permission check completed"
+
+  multi-arch:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, arm64, i386, ppc64le, s390x, riscv64, mips64, aarch32, sparc64, loongarch64]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3 jq
+    
+    - name: Make scripts executable
+      run: |
+        chmod +x collect_info.sh plugins/*.sh
+    
+    - name: Test architecture-specific plugin execution
+      run: |
+        echo "Testing plugins with architecture: ${{ matrix.arch }}"
+        # Test each plugin individually with the specific architecture
+        for plugin in plugins/*.sh; do
+          echo "Testing $plugin with ${{ matrix.arch }}..."
+          timeout 10 "$plugin" "${{ matrix.arch }}" > "test_${{ matrix.arch }}_$(basename $plugin .sh).json"
+          python3 -m json.tool "test_${{ matrix.arch }}_$(basename $plugin .sh).json" > /dev/null
+        done
+        echo "Architecture ${{ matrix.arch }} plugin tests completed"
+    
+    - name: Upload architecture test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: arch-test-results-${{ matrix.arch }}
+        path: test_${{ matrix.arch }}_*.json
+        retention-days: 30
