@@ -1,0 +1,65 @@
+# Multi-stage Dockerfile for optimized Automation Nation builds
+# This Dockerfile creates minimal production images using precompiled binaries
+
+# Build stage for creating precompiled binaries
+FROM rust:1.75-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig \
+    git
+
+# Set working directory
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Build optimized release binary
+RUN cargo build --release --target x86_64-unknown-linux-musl \
+    && strip target/x86_64-unknown-linux-musl/release/web_server
+
+# Runtime stage - minimal Alpine image
+FROM alpine:latest AS runtime
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    && adduser -D -s /bin/sh automation
+
+# Copy precompiled binary from builder stage
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/web_server /usr/local/bin/automation-nation
+
+# Copy collect_info.sh and plugins for system profiling
+COPY collect_info.sh /usr/local/bin/
+COPY plugins/ /usr/local/share/automation-nation/plugins/
+RUN chmod +x /usr/local/bin/collect_info.sh \
+    && chmod +x /usr/local/share/automation-nation/plugins/*.sh
+
+# Create data directory
+RUN mkdir -p /app/data \
+    && chown -R automation:automation /app
+
+# Switch to non-root user
+USER automation
+WORKDIR /app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/automation-nation --version || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Set environment variables
+ENV RUST_LOG=info
+ENV HOST=0.0.0.0
+ENV PORT=3000
+ENV COLLECT_INFO_SCRIPT=/usr/local/bin/collect_info.sh
+
+# Run the application
+CMD ["/usr/local/bin/automation-nation", "serve", "--host", "0.0.0.0", "--port", "3000"]

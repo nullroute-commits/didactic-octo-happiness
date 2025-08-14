@@ -1,0 +1,373 @@
+name: Automated Release Branch Creation
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force release creation even if no changes'
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Run daily at 2 AM UTC to check for changes
+    - cron: '0 2 * * *'
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-changes:
+    name: Check for Changes Since Last Release
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.changes.outputs.should_release }}
+      release_version: ${{ steps.version.outputs.release_version }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Get latest release tag
+      id: latest_release
+      run: |
+        LATEST_TAG=$(git tag -l "release-*" | sort -V | tail -1)
+        if [ -z "$LATEST_TAG" ]; then
+          LATEST_TAG="initial"
+        fi
+        echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        echo "Latest release tag: $LATEST_TAG"
+        
+    - name: Check for changes since last release
+      id: changes
+      run: |
+        if [ "${{ steps.latest_release.outputs.latest_tag }}" = "initial" ]; then
+          echo "should_release=true" >> $GITHUB_OUTPUT
+          echo "First release - will create release branch"
+        else
+          CHANGES=$(git diff --name-only ${{ steps.latest_release.outputs.latest_tag }}...HEAD | grep -E '\.(rs|toml|yml|yaml|sh)$' | wc -l)
+          if [ "$CHANGES" -gt 0 ] || [ "${{ github.event.inputs.force_release }}" = "true" ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "Found $CHANGES changed files since last release"
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "No significant changes since last release"
+          fi
+        fi
+        
+    - name: Generate release version
+      id: version
+      if: steps.changes.outputs.should_release == 'true'
+      run: |
+        # Generate datetime.ISO format: YYYY-MM-DDTHH-MM-SS
+        RELEASE_VERSION=$(date -u +"%Y-%m-%dT%H-%M-%S")
+        echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+        echo "Release version: $RELEASE_VERSION"
+
+  create-release:
+    name: Create Release Branch with Binaries
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: needs.check-changes.outputs.should_release == 'true'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Install cross-compilation tools
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross
+        
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Build binaries for multiple architectures
+      run: |
+        mkdir -p release-binaries
+        
+        # Define target architectures for container deployment
+        TARGETS=(
+          "x86_64-unknown-linux-gnu"
+          "aarch64-unknown-linux-gnu"
+          "x86_64-unknown-linux-musl"
+          "aarch64-unknown-linux-musl"
+        )
+        
+        echo "Building binaries for container deployment..."
+        
+        for target in "${TARGETS[@]}"; do
+          echo "Building for $target..."
+          
+          # Use cross for cross-compilation
+          if [[ "$target" == *"musl"* ]] || [[ "$target" == "aarch64"* ]]; then
+            cross build --release --target "$target" --bin web_server --bin ci_runner
+          else
+            cargo build --release --target "$target" --bin web_server --bin ci_runner
+          fi
+          
+          # Create architecture-specific directory
+          ARCH_DIR="release-binaries/$target"
+          mkdir -p "$ARCH_DIR"
+          
+          # Copy binaries
+          cp "target/$target/release/web_server" "$ARCH_DIR/"
+          cp "target/$target/release/ci_runner" "$ARCH_DIR/"
+          
+          # Create checksums
+          cd "$ARCH_DIR"
+          sha256sum web_server ci_runner > checksums.sha256
+          cd - > /dev/null
+          
+          echo "✅ Built binaries for $target"
+        done
+        
+    - name: Create container-ready binary package
+      run: |
+        cd release-binaries
+        
+        # Create a manifest file with build information
+        cat > build-manifest.json << EOF
+        {
+          "release_version": "${{ needs.check-changes.outputs.release_version }}",
+          "build_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "git_commit": "${{ github.sha }}",
+          "targets": [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu", 
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl"
+          ],
+          "binaries": ["web_server", "ci_runner"],
+          "purpose": "Pre-compiled binaries for container deployment"
+        }
+        EOF
+        
+        # Create architecture detection script for containers
+        cat > detect-arch.sh << 'EOF'
+        #!/bin/bash
+        # Architecture detection script for container binary selection
+        
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64|amd64)
+            if ldd /bin/ls 2>/dev/null | grep -q musl; then
+              echo "x86_64-unknown-linux-musl"
+            else
+              echo "x86_64-unknown-linux-gnu"
+            fi
+            ;;
+          aarch64|arm64)
+            if ldd /bin/ls 2>/dev/null | grep -q musl; then
+              echo "aarch64-unknown-linux-musl"
+            else
+              echo "aarch64-unknown-linux-gnu"
+            fi
+            ;;
+          *)
+            echo "Unsupported architecture: $ARCH" >&2
+            exit 1
+            ;;
+        esac
+        EOF
+        chmod +x detect-arch.sh
+        
+        # Create overall checksums
+        find . -name "*.sha256" -exec cat {} \; > all-checksums.sha256
+        
+    - name: Create release branch
+      run: |
+        RELEASE_VERSION="${{ needs.check-changes.outputs.release_version }}"
+        BRANCH_NAME="release-$RELEASE_VERSION"
+        
+        # Configure git
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        
+        # Create and checkout release branch
+        git checkout -b "$BRANCH_NAME"
+        
+        # Add release binaries
+        git add release-binaries/
+        
+        # Update Dockerfile to use pre-compiled binaries
+        cat > Dockerfile.release << 'EOF'
+        # Dockerfile for release with pre-compiled binaries
+        FROM debian:bookworm-slim
+        
+        # Install runtime dependencies
+        RUN apt-get update && apt-get install -y \
+            ca-certificates \
+            curl \
+            sqlite3 \
+            bash \
+            podman \
+            procps \
+            net-tools \
+            iproute2 \
+            lshw \
+            pciutils \
+            usbutils \
+            lldpd \
+            && rm -rf /var/lib/apt/lists/*
+        
+        # Create app user
+        RUN useradd -m -u 1000 appuser
+        
+        # Create directories
+        RUN mkdir -p /app/plugins /app/templates /app/data && \
+            chown -R appuser:appuser /app
+        
+        # Copy architecture detection script
+        COPY release-binaries/detect-arch.sh /usr/local/bin/
+        
+        # Copy binaries based on architecture
+        COPY release-binaries/ /app/release-binaries/
+        RUN ARCH_TARGET=$(/usr/local/bin/detect-arch.sh) && \
+            cp "/app/release-binaries/$ARCH_TARGET/web_server" /app/bin/ && \
+            cp "/app/release-binaries/$ARCH_TARGET/ci_runner" /app/bin/ && \
+            chmod +x /app/bin/*
+        
+        # Copy application files
+        COPY collect_info.sh /app/
+        COPY plugins/ /app/plugins/
+        COPY templates/ /app/templates/
+        
+        # Make scripts executable
+        RUN chmod +x /app/collect_info.sh /app/plugins/*.sh
+        
+        # Set ownership
+        RUN chown -R appuser:appuser /app
+        
+        # Switch to app user
+        USER appuser
+        
+        # Set working directory
+        WORKDIR /app
+        
+        # Environment variables
+        ENV RUST_LOG=info
+        ENV ENABLE_HASHING=1
+        ENV ENABLE_SUDO_SUPPORT=0
+        
+        # Expose port
+        EXPOSE 3000
+        
+        # Health check
+        HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+            CMD curl -f http://localhost:3000/health || exit 1
+        
+        # Default command
+        CMD ["/app/bin/web_server", "serve", "--host", "0.0.0.0", "--port", "3000"]
+        EOF
+        
+        git add Dockerfile.release
+        
+        # Create release notes
+        cat > RELEASE_NOTES.md << EOF
+        # Release $RELEASE_VERSION
+        
+        **Release Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        **Git Commit:** ${{ github.sha }}
+        
+        ## Pre-compiled Binaries
+        
+        This release includes pre-compiled Rust binaries for multiple architectures:
+        
+        - **x86_64-unknown-linux-gnu** - Standard Linux x86_64 (glibc)
+        - **aarch64-unknown-linux-gnu** - ARM64 Linux (glibc)  
+        - **x86_64-unknown-linux-musl** - x86_64 Linux (musl libc, Alpine)
+        - **aarch64-unknown-linux-musl** - ARM64 Linux (musl libc, Alpine)
+        
+        ## Container Usage
+        
+        Use the release-specific Dockerfile for optimal performance:
+        
+        \`\`\`bash
+        # Build container with pre-compiled binaries
+        docker build -f Dockerfile.release -t automation-nation:$RELEASE_VERSION .
+        
+        # Run with pre-compiled binaries
+        docker run -p 3000:3000 automation-nation:$RELEASE_VERSION
+        \`\`\`
+        
+        ## Binary Verification
+        
+        All binaries include SHA256 checksums for verification:
+        
+        \`\`\`bash
+        # Verify binary integrity
+        cd release-binaries/x86_64-unknown-linux-gnu
+        sha256sum -c checksums.sha256
+        \`\`\`
+        
+        ## Changes Since Last Release
+        
+        $(git log --oneline ${{ steps.latest_release.outputs.latest_tag }}..HEAD | head -20)
+        
+        ## Architecture Detection
+        
+        The container automatically detects the target architecture and uses the appropriate pre-compiled binary for optimal performance.
+        EOF
+        
+        git add RELEASE_NOTES.md
+        
+        # Commit release
+        git commit -m "Release $RELEASE_VERSION with pre-compiled binaries
+
+        - Pre-compiled Rust binaries for multiple architectures
+        - Container-optimized Dockerfile with architecture detection
+        - Automated binary verification with SHA256 checksums
+        - Release notes with change summary
+        
+        Build timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        Git commit: ${{ github.sha }}"
+        
+        # Push release branch
+        git push origin "$BRANCH_NAME"
+        
+        # Create git tag
+        git tag "release-$RELEASE_VERSION"
+        git push origin "release-$RELEASE_VERSION"
+        
+        echo "✅ Created release branch: $BRANCH_NAME"
+        echo "✅ Created release tag: release-$RELEASE_VERSION"
+        
+    - name: Create GitHub Release
+      id: create_release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create "release-${{ needs.check-changes.outputs.release_version }}" \
+          --title "Automation Nation Release ${{ needs.check-changes.outputs.release_version }}" \
+          --notes-file RELEASE_NOTES.md \
+          --target "$GITHUB_SHA" \
+          --verify-tag \
+          --latest
+        
+        # Get the upload_url for the created release and set as output
+        UPLOAD_URL=$(gh api repos/${{ github.repository }}/releases/tags/release-${{ needs.check-changes.outputs.release_version }} --jq '.upload_url')
+        echo "upload_url=$UPLOAD_URL" >> $GITHUB_OUTPUT
+        
+    - name: Upload release artifacts
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release upload "release-${{ needs.check-changes.outputs.release_version }}" \
+          release-binaries/all-checksums.sha256#all-checksums.sha256 \
+          --clobber

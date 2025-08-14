@@ -1,0 +1,56 @@
+# Precompiled binary Dockerfile - uses existing binary artifacts
+# This Dockerfile creates minimal runtime images using pre-built binaries
+
+ARG TARGETARCH
+ARG BINARY_NAME=automation-nation
+
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    && adduser -D -s /bin/sh automation
+
+# Copy precompiled binary (should be provided as build context)
+ARG BINARY_NAME
+COPY ${BINARY_NAME} /usr/local/bin/automation-nation
+RUN chmod +x /usr/local/bin/automation-nation
+
+# Copy system profiling scripts
+COPY collect_info.sh /usr/local/bin/
+COPY plugins/ /usr/local/share/automation-nation/plugins/
+RUN chmod +x /usr/local/bin/collect_info.sh \
+    && chmod +x /usr/local/share/automation-nation/plugins/*.sh
+
+# Create data directory
+RUN mkdir -p /app/data \
+    && chown -R automation:automation /app
+
+# Create configuration directory
+RUN mkdir -p /app/config \
+    && chown -R automation:automation /app/config
+
+# Switch to non-root user
+USER automation
+WORKDIR /app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/automation-nation --version || exit 1
+
+# Expose port
+EXPOSE 3000
+
+# Set environment variables
+ENV RUST_LOG=info
+ENV HOST=0.0.0.0
+ENV PORT=3000
+ENV COLLECT_INFO_SCRIPT=/usr/local/bin/collect_info.sh
+ENV DATABASE_URL=sqlite:///app/data/automation_nation.db
+
+# Volume for persistent data
+VOLUME ["/app/data", "/app/config"]
+
+# Run the application
+CMD ["/usr/local/bin/automation-nation", "serve", "--host", "0.0.0.0", "--port", "3000"]
