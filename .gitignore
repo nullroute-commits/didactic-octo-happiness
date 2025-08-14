@@ -1,0 +1,86 @@
+# System information collector output files
+*.json
+system-info*
+*-info.json
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Log files
+*.log
+
+# Backup files
+*.bak
+*~
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Test artifacts
+/test/tmp/
+test_output/
+test_results/
+privilege_test_results/
+privilege_results/
+arch_test_*/
+os_test_*/
+test_results_*/
+comprehensive_report/
+all_results/
+
+# Runtime directories
+.cache/
+
+# Rust build artifacts
+/target
+Cargo.lock
+
+# CI test suite specific
+*.csv
+!.github/workflows/*.yml
+
+# Container and deployment files
+.env
+*.pid
+*.sock
+
+# Database files
+*.db
+*.sqlite3
+
+# Volume and persistent data
+/data/
+/volumes/
+
+# Container runtime files
+/var/lib/lxc/*/
+/var/run/docker.sock
+/run/podman/podman.sock
+
+# Monitoring data
+/monitoring/data/
+/grafana-data/
+/prometheus-data/
+/elasticsearch-data/
+
+# Secrets and certificates
+*.key
+*.pem
+*.crt
+*.p12
+secrets/
+certs/
