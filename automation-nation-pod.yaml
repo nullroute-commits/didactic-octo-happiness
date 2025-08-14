@@ -1,0 +1,444 @@
+# Podman Pod Configuration for Automation Nation
+# Deploy with: podman play kube automation-nation-pod.yaml
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: automation-nation
+  labels:
+    app: automation-nation
+    version: "1.0"
+spec:
+  restartPolicy: Always
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+  - name: automation-nation-web
+    image: localhost/automation-nation:latest
+    ports:
+    - containerPort: 3000
+      hostPort: 3000
+      protocol: TCP
+    env:
+    - name: RUST_LOG
+      value: "info"
+    - name: ENABLE_HASHING
+      value: "1"
+    - name: ENABLE_SUDO_SUPPORT
+      value: "0"
+    - name: HOST_SYSTEM_ROOT
+      value: "/host"
+    - name: DATABASE_URL
+      value: "sqlite:///app/data/automation_nation.db"
+    - name: PODMAN_MODE
+      value: "true"
+    - name: CONTAINER_RUNTIME
+      value: "podman"
+    volumeMounts:
+    - name: host-proc
+      mountPath: /host/proc
+      readOnly: true
+    - name: host-sys
+      mountPath: /host/sys
+      readOnly: true
+    - name: host-etc
+      mountPath: /host/etc
+      readOnly: true
+    - name: app-data
+      mountPath: /app/data
+    - name: podman-socket
+      mountPath: /run/podman/podman.sock
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    resources:
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+        
+  - name: postgres
+    image: docker.io/library/postgres:15-alpine
+    ports:
+    - containerPort: 5432
+      protocol: TCP
+    env:
+    - name: POSTGRES_DB
+      value: "automation_nation"
+    - name: POSTGRES_USER
+      value: "automation_user"
+    - name: POSTGRES_PASSWORD
+      value: "automation_password"
+    - name: PGDATA
+      value: "/var/lib/postgresql/data/pgdata"
+    volumeMounts:
+    - name: postgres-data
+      mountPath: /var/lib/postgresql/data
+    livenessProbe:
+      exec:
+        command:
+        - pg_isready
+        - -U
+        - automation_user
+        - -d
+        - automation_nation
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+    readinessProbe:
+      exec:
+        command:
+        - pg_isready
+        - -U
+        - automation_user
+        - -d
+        - automation_nation
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+        
+  - name: redis
+    image: docker.io/library/redis:7-alpine
+    ports:
+    - containerPort: 6379
+      protocol: TCP
+    args:
+    - redis-server
+    - --appendonly
+    - "yes"
+    - --requirepass
+    - redis_password
+    volumeMounts:
+    - name: redis-data
+      mountPath: /data
+    livenessProbe:
+      exec:
+        command:
+        - redis-cli
+        - ping
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+    readinessProbe:
+      exec:
+        command:
+        - redis-cli
+        - ping
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+    resources:
+      limits:
+        memory: "256Mi"
+        cpu: "250m"
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+        
+  - name: netbox
+    image: docker.io/netboxcommunity/netbox:latest
+    ports:
+    - containerPort: 8080
+      hostPort: 8080
+      protocol: TCP
+    env:
+    - name: CORS_ORIGIN_ALLOW_ALL
+      value: "True"
+    - name: DB_HOST
+      value: "localhost"
+    - name: DB_NAME
+      value: "netbox"
+    - name: DB_PASSWORD
+      value: "automation_password"
+    - name: DB_USER
+      value: "automation_user"
+    - name: REDIS_HOST
+      value: "localhost"
+    - name: REDIS_PASSWORD
+      value: "redis_password"
+    - name: SECRET_KEY
+      value: "netbox_secret_key_change_me"
+    - name: SUPERUSER_NAME
+      value: "admin"
+    - name: SUPERUSER_EMAIL
+      value: "admin@automation-nation.local"
+    - name: SUPERUSER_PASSWORD
+      value: "admin_password"
+    volumeMounts:
+    - name: netbox-media
+      mountPath: /opt/netbox/media
+    - name: netbox-reports
+      mountPath: /opt/netbox/netbox/reports
+    - name: netbox-scripts
+      mountPath: /opt/netbox/netbox/scripts
+    livenessProbe:
+      httpGet:
+        path: /api/
+        port: 8080
+      initialDelaySeconds: 60
+      periodSeconds: 60
+      timeoutSeconds: 15
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /api/
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+    resources:
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+        
+  - name: prometheus
+    image: docker.io/prom/prometheus:latest
+    ports:
+    - containerPort: 9090
+      hostPort: 9090
+      protocol: TCP
+    args:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --web.console.libraries=/etc/prometheus/console_libraries
+    - --web.console.templates=/etc/prometheus/consoles
+    - --storage.tsdb.retention.time=200h
+    - --web.enable-lifecycle
+    volumeMounts:
+    - name: prometheus-config
+      mountPath: /etc/prometheus/prometheus.yml
+      readOnly: true
+    - name: prometheus-data
+      mountPath: /prometheus
+    livenessProbe:
+      httpGet:
+        path: /-/healthy
+        port: 9090
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /-/ready
+        port: 9090
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+    resources:
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+        
+  - name: grafana
+    image: docker.io/grafana/grafana:latest
+    ports:
+    - containerPort: 3000
+      hostPort: 3001
+      protocol: TCP
+    env:
+    - name: GF_SECURITY_ADMIN_PASSWORD
+      value: "admin_password"
+    - name: GF_INSTALL_PLUGINS
+      value: "grafana-piechart-panel"
+    volumeMounts:
+    - name: grafana-data
+      mountPath: /var/lib/grafana
+    - name: grafana-dashboards
+      mountPath: /etc/grafana/provisioning/dashboards
+      readOnly: true
+    - name: grafana-datasources
+      mountPath: /etc/grafana/provisioning/datasources
+      readOnly: true
+    livenessProbe:
+      httpGet:
+        path: /api/health
+        port: 3000
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /api/health
+        port: 3000
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "250m"
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+        
+  volumes:
+  - name: host-proc
+    hostPath:
+      path: /proc
+      type: Directory
+  - name: host-sys
+    hostPath:
+      path: /sys
+      type: Directory
+  - name: host-etc
+    hostPath:
+      path: /etc
+      type: Directory
+  - name: podman-socket
+    hostPath:
+      path: /run/user/1000/podman/podman.sock
+      type: Socket
+  - name: app-data
+    persistentVolumeClaim:
+      claimName: automation-data-pvc
+  - name: postgres-data
+    persistentVolumeClaim:
+      claimName: postgres-data-pvc
+  - name: redis-data
+    persistentVolumeClaim:
+      claimName: redis-data-pvc
+  - name: netbox-media
+    persistentVolumeClaim:
+      claimName: netbox-media-pvc
+  - name: netbox-reports
+    persistentVolumeClaim:
+      claimName: netbox-reports-pvc
+  - name: netbox-scripts
+    persistentVolumeClaim:
+      claimName: netbox-scripts-pvc
+  - name: prometheus-data
+    persistentVolumeClaim:
+      claimName: prometheus-data-pvc
+  - name: grafana-data
+    persistentVolumeClaim:
+      claimName: grafana-data-pvc
+  - name: prometheus-config
+    configMap:
+      name: prometheus-config
+  - name: grafana-dashboards
+    configMap:
+      name: grafana-dashboards
+  - name: grafana-datasources
+    configMap:
+      name: grafana-datasources
+
+---
+# Persistent Volume Claims for Podman deployment
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: automation-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-media-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-reports-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-scripts-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

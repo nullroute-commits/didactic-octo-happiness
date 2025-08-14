@@ -1,0 +1,104 @@
+# NetBox from Source with Plugin Support
+# This Dockerfile builds NetBox from source and optionally installs plugins
+
+ARG NETBOX_VERSION=v4.1.0
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-slim as base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    libpq-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    libffi-dev \
+    libssl-dev \
+    zlib1g-dev \
+    libjpeg-dev \
+    uuid-dev \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create netbox user
+RUN useradd --system --shell /bin/bash --home-dir /opt/netbox --create-home netbox
+
+# Set working directory
+WORKDIR /opt/netbox
+
+# Clone NetBox from source
+ARG NETBOX_VERSION
+RUN git clone --branch ${NETBOX_VERSION} --depth 1 https://github.com/netbox-community/netbox.git /opt/netbox/netbox
+
+# Install Python dependencies
+WORKDIR /opt/netbox/netbox
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install optional dependencies for enhanced functionality
+RUN pip install --no-cache-dir \
+    gunicorn \
+    psycopg2-binary \
+    redis \
+    django-cors-headers \
+    django-extensions \
+    django-debug-toolbar
+
+# Plugin installation stage
+FROM base as plugin-installer
+
+ARG ENABLE_PLUGINS=false
+ARG PLUGIN_LIST=""
+
+# Copy plugin installation script
+COPY install-plugins.sh /tmp/install-plugins.sh
+RUN chmod +x /tmp/install-plugins.sh
+
+# Install plugins if enabled
+RUN if [ "$ENABLE_PLUGINS" = "true" ] && [ -n "$PLUGIN_LIST" ]; then \
+        /tmp/install-plugins.sh "$PLUGIN_LIST"; \
+    fi
+
+# Production stage
+FROM base as production
+
+# Copy NetBox installation from previous stage
+COPY --from=plugin-installer /opt/netbox /opt/netbox
+
+# Copy configuration files
+COPY netbox-config/ /opt/netbox/netbox/netbox/
+
+# Create media and reports directories
+RUN mkdir -p /opt/netbox/netbox/media \
+             /opt/netbox/netbox/reports \
+             /opt/netbox/netbox/scripts \
+             /opt/netbox/netbox/static
+
+# Set proper ownership
+RUN chown -R netbox:netbox /opt/netbox
+
+# Switch to netbox user
+USER netbox
+
+# Set working directory
+WORKDIR /opt/netbox/netbox
+
+# Copy entrypoint script
+COPY --chown=netbox:netbox docker-entrypoint.sh /opt/netbox/
+RUN chmod +x /opt/netbox/docker-entrypoint.sh
+
+# Expose port
+EXPOSE 8080
+
+# Environment variables
+ENV PYTHONPATH=/opt/netbox/netbox
+ENV DJANGO_SETTINGS_MODULE=netbox.settings
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8080/api/ || exit 1
+
+# Default entrypoint
+ENTRYPOINT ["/opt/netbox/docker-entrypoint.sh"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "--timeout", "120", "netbox.wsgi"]
