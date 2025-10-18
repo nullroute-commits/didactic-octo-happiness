@@ -299,8 +299,8 @@ curl http://localhost:3000/api/deployments/status
 # Or use the CI runner for automated testing
 cargo run --bin ci_runner -- run --profile ci
 
-# Test specific container runtime
-cargo run --bin ci_runner -- validate --runtime docker
+# Validate script output format
+cargo run --bin ci_runner -- validate
 ```
 
 ## Configuration
@@ -424,9 +424,8 @@ cargo run --bin ci_runner -- run \
   --operating-systems ubuntu,alpine \
   --parallel
 
-# Test container runtime compatibility
-cargo run --bin ci_runner -- validate --runtime docker
-cargo run --bin ci_runner -- validate --runtime podman
+# Validate script output format
+cargo run --bin ci_runner -- validate
 ```
 
 ## Release Management
