@@ -557,6 +557,22 @@ git push origin feature-branch
 - **Configuration Guide**: See `CONFIGURATION.md` for configuration options
 - **Implementation Status**: See `IMPLEMENTATION_SUMMARY.md` for feature status
 - **Project Analysis**: See `ANALYSIS_SUMMARY.md` for project improvements
+- **Documentation Validation**: See `DOCUMENTATION_VALIDATION_REPORT.md` for validation results
+
+### Validating Documentation
+
+To verify that all documented procedures work correctly, run the automated validation script:
+
+```bash
+./validate_documentation.sh
+```
+
+This script tests:
+- System information collection with various options
+- Rust build process and binaries
+- Command-line interface accuracy
+- File structure completeness
+- Container runtime availability
 
 ## License
 
