@@ -1888,22 +1888,22 @@ pub async fn admin_plugins_handler() -> Html<String> {
     </style>
     
     <script>
-        function togglePlugin(event, pluginId, enabled) {
-            fetch(`/api/admin/plugins/${pluginId}/toggle`, {
+        function togglePlugin(event, pluginId, enabled) {{
+            fetch(`/api/admin/plugins/${{pluginId}}/toggle`, {{
                 method: 'POST',
-                headers: {
+                headers: {{
                     'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ enabled: enabled })
-            })
-            .then(response => {
-                if (!response.ok) {
+                }},
+                body: JSON.stringify({{ enabled: enabled }})
+            }})
+            .then(response => {{
+                if (!response.ok) {{
                     alert('Failed to toggle plugin');
                     // Revert the toggle
                     event.target.checked = !enabled;
-                }
-            });
-        }
+                }}
+            }});
+        }}
         
         // Load plugin status on page load
         fetch('/api/admin/plugins')
