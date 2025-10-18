@@ -255,7 +255,10 @@ shellcheck *.sh plugins/*.sh
 1. **Setup**:
    ```bash
    # Install Rust
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   # Download the installer script and inspect it before running for security.
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh
+   less rustup-init.sh   # <-- Review the script before executing!
+   sh rustup-init.sh
    
    # Install dependencies
    cargo build
