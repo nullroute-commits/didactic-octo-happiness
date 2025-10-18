@@ -176,7 +176,7 @@ curl -fsSLo install.sh https://raw.githubusercontent.com/Homebrew/install/HEAD/i
 # You can also check the SHA256 at https://docs.brew.sh/Installation#untar-anywhere
 
 # Run the installation script
-/bin/bash install.sh
+bash install.sh
 
 # For more details, see: https://brew.sh/
 # Install dependencies

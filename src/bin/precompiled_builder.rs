@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 "release-size" => ci_test_suite::precompiled_builder::OptimizationLevel::ReleaseSize,
                 _ => {
                     error!("Invalid optimization level: {}", optimization);
-                    return;
+                    return Err(anyhow::anyhow!("Invalid optimization level: {}", optimization));
                 }
             };
             
@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     
-    result
+    result.map(|_| ()).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 /// Build precompiled binaries with the given configuration
@@ -449,7 +449,7 @@ fn calculate_sha256(file_path: &std::path::Path) -> Result<String, Box<dyn std::
 }
 
 /// Parse a list of target architecture strings
-fn parse_target_list(targets: &[String]) -> Result<Vec<TargetArch>, Box<dyn std::error::Error>> {
+fn parse_target_list(targets: &[String]) -> anyhow::Result<Vec<TargetArch>> {
     let mut result = Vec::new();
     
     for target in targets {
@@ -460,7 +460,7 @@ fn parse_target_list(targets: &[String]) -> Result<Vec<TargetArch>, Box<dyn std:
 }
 
 /// Parse a single target architecture string
-fn parse_single_target(target: &str) -> Result<TargetArch, Box<dyn std::error::Error>> {
+fn parse_single_target(target: &str) -> anyhow::Result<TargetArch> {
     match target {
         "x86_64-unknown-linux-gnu" => Ok(TargetArch::X86_64Linux),
         "x86_64-unknown-linux-musl" => Ok(TargetArch::X86_64LinuxMusl),
@@ -468,6 +468,6 @@ fn parse_single_target(target: &str) -> Result<TargetArch, Box<dyn std::error::E
         "aarch64-unknown-linux-musl" => Ok(TargetArch::Aarch64LinuxMusl),
         "x86_64-apple-darwin" => Ok(TargetArch::X86_64Darwin),
         "aarch64-apple-darwin" => Ok(TargetArch::Aarch64Darwin),
-        _ => Err(format!("Unsupported target architecture: {}", target).into()),
+        _ => Err(anyhow::anyhow!("Unsupported target architecture: {}", target)),
     }
 }
